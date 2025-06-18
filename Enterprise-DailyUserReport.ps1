@@ -1,5 +1,5 @@
 #==================================================================================
-# Author: Richard Edwards for NORAD&NORTHCOM
+# Author: Richard Edwards for CompanyName
 # Reviewer: 
 # Last Updated: 2025-06-18
 # Self-contained logon script for VDI/Thick Client/Trusted Thin Client environments
