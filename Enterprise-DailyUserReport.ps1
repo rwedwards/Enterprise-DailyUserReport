@@ -116,37 +116,57 @@ try {
 }
 
 # -------------------
-# ODFC Container Check
+# ODFC Container Check - Active Detection
 # -------------------
+Write-Host "[+] Scanning for ODFC containers at all known locations..."
+
 try {
-    $odfcFound = $false
-    $odfcServers = @("odfcServer01", "odfcServer02")
+    $odfcActive = $null
+    $odfcPassive = @()
+    $odfcServers = @("ODFC Server 01", "ODFC Server 02")
     $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+    $username = $env:USERNAME
 
     foreach ($server in $odfcServers) {
-        $basePath = "\\$server.domain\FSLProfileDisk\$Username"
+        $basePath = "\\$server.domain\FSLProfileDisk\$username"
         $subFolders = Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -like "*$Username*" -and $_.Name -like "*$sid*" }
+                      Where-Object { $_.Name -like "*$username*" -and $_.Name -like "*$sid*" }
 
         foreach ($folder in $subFolders) {
-            $vhd = Get-ChildItem $folder.FullName -Filter "ODFC_*.vhdx" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($vhd) {
-                $size = [math]::Round($vhd.Length / 1GB, 2)
-                $reportHtml += "<div><b>ODFC VHDX:</b> $($vhd.FullName) ($size GB)</div>"
-                $odfcFound = $true
-                break
+            $vhdx = Get-ChildItem -Path $folder.FullName -Filter "ODFC_*.vhdx" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($vhdx) {
+                $stream = $null
+                try {
+                    $stream = [System.IO.File]::Open($vhdx.FullName, 'Open', 'ReadWrite', 'None')
+                    $stream.Close()
+                    $status = "Passive (unlocked)"
+                    $odfcPassive += "$($vhdx.FullName) - $status"
+                } catch {
+                    $status = "Active (locked)"
+                    $odfcActive = "$($vhdx.FullName) - $status"
+                }
             }
         }
-
-        if ($odfcFound) { break }
     }
 
-    if (-not $odfcFound) {
-        $reportHtml += "<div><b>ODFC Container:</b> Not found</div>"
+    if ($odfcActive) {
+        $reportHtml += "<div><b>ODFC Container (Active):</b> $odfcActive</div>"
     }
+
+    if ($odfcPassive.Count -gt 0) {
+        $reportHtml += "<div><b>ODFC Containers (Passive):</b><ul>"
+        $odfcPassive | ForEach-Object { $reportHtml += "<li>$_</li>" }
+        $reportHtml += "</ul></div>"
+    }
+
+    if (-not $odfcActive -and $odfcPassive.Count -eq 0) {
+        $reportHtml += "<div><b>ODFC Container:</b> None Found</div>"
+    }
+
 } catch {
-    $reportHtml += "<div><b>ODFC Container:</b> Error</div>"
+    $reportHtml += "<div><b>ODFC Container:</b> Error during scan</div>"
 }
+
 
 # -------------------
 # OneDrive Info
