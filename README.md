@@ -59,7 +59,7 @@ $ReportRoot = "C:\Users\$env:USERNAME\Downloads"
 $CsvShareRoot = "C:\Users\$env:USERNAME\Downloads"
 ```
 
-> 💡 Recommended: Update `$ReportRoot` to `\\Domainl\Share\EnterpriseReports` and `$CsvShareRoot` to your daily CSV share once testing is complete.
+> 💡 Recommended: Update `$ReportRoot` to `\\Domain\Share\EnterpriseReports` and `$CsvShareRoot` to your daily CSV share once testing is complete.
 
 ---
 
