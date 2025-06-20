@@ -1,93 +1,124 @@
-# Enterprise-DailyUserReport
+# Enterprise-UserReport.ps1
 
-A lightweight PowerShell logon script for capturing VDI and thick-client user session diagnostics in **DoD STIG-compliant environments**.
+## Overview
+This PowerShell script is designed for **daily diagnostics and reporting** on enterprise Windows environments, supporting both **VDI** and **thick clients**. It collects key system and user session data, builds a visually formatted **HTML report**, and outputs **CSV summaries** for aggregation and monitoring.
 
----
-
-## 🔍 Features
-
-- FSLogix Profile + ODFC Container detection (VHDX / O365_Diff)  
-- OneDrive usage + path  
-- Mapped drives (WMI-based)  
-- Mapped printers (clean names)  
-- VDI detection via VMware Tools  
-- Logon time + time since login  
-- Network info (gateway, IP, DNS)  
-- Environment variables (select)  
-- System uptime  
-- Optional slow logon metrics  
-- HTML-based, timestamped reports  
-- Works in non-elevated, user logon context  
+> Authored by: Richard Edwards for Company Name  
+> Permission Level: Standard user (non-privileged)
 
 ---
 
-## 📂 Output
+## Features
 
-Reports are saved as:
-
-`\\Domain\Path_to_share\$Username\UserReport_YYYY-MM-DD_HH-mm.html`
-
-- Ensure users have **write access** to this share  
-- The script will create folders automatically per user  
-
----
-
-## ⚙️ Setup Instructions
-
-1. Copy `Enterprise-DailyUserReport.ps1` to a shared location or SYSVOL path  
-2. Assign via GPO:
-   - `User Configuration → Policies → Windows Settings → Scripts (Logon)`
-   - Add `Enterprise-DailyUserReport.ps1`
-3. Customize base path in the script:
-
-   ```powershell
-   $BasePath = "\\Domain\Path_to_share\$Username"
-   ```
-
-4. Done! Reports will generate per user at each logon
+- Gathers system and session info:
+  - User logon time and duration
+  - Site location (based on logon server)
+  - FSLogix profile status and size
+  - ODFC (OneDrive Files On-Demand Container) checks
+  - OneDrive path and size
+  - Network-mapped drives and printers
+  - Operating system name/version/build
+  - Environment variables
+  - AD group memberships
+  - Group Policy Objects (via `gpresult`)
+- HTML report generated per user and day
+- CSV output for aggregation (includes OS release, session type, etc.)
+- Supports shared network storage output
+- Built-in rotation logic to clean up old reports
 
 ---
 
-## 🖥️ Platform Compatibility
-
-- Windows Server 2019 / 2022  
-- Windows 11 Enterprise (23H2)  
-- VMware Horizon VDI  
-- FSLogix Profile Containers  
-- DoD STIG-hardened environments  
-
----
-
-## 📋 Requirements
-
-- PowerShell 5.1+  
-- No elevation required  
-- No external modules  
-- Works under standard user context  
-
----
-
-## 📊 Example Output
+## Output Structure
 
 ```
-Username:        John.Doe
-Computer Name:   Windows113344
-Date:            06/18/2025 10:59
-Session Type:    VDI (VMware Tools Detected)
-Mapped Drives:   Z:\ ➜ \\server\share
-Mapped Printers: \\printserver\P3204
-FSLogix Profile: \\server\FSLogix\profile.vhdx
-ODFC Container:  \\server\FSLogix\ODFC_John.Doe.vhdx
-System Uptime:   11 hrs 36 min
+EnterpriseReports\
+├── Sherlock.Holmes\
+│   ├── 2025-06-18\
+│   │   ├── Enterprise-UserReport-Richard.Edwards-2025-06-18.html
+│   │   └── ...
+├── John.Doe\
+│   └── 2025-06-18\
+│       └── Enterprise-UserReport-John.Doe-2025-06-18.html
+DailyCSVs\
+├── Enterprise-UserReport-Aggregated-2025-06-18.csv
+```
+
+> *Each user's daily HTML report is stored in a structured folder format by username and date.*  
+> *The daily aggregated CSV includes all users who ran the script that day.*
+
+---
+
+## Configuration Notes
+
+Update these paths as needed:
+
+```powershell
+# For HTML report storage
+$ReportRoot = "C:\Users\$env:USERNAME\Downloads"
+# For CSV aggregation (to be updated to DFS share)
+$CsvShareRoot = "C:\Users\$env:USERNAME\Downloads"
+```
+
+> 💡 Recommended: Update `$ReportRoot` to `\\Domainl\Share\EnterpriseReports` and `$CsvShareRoot` to your daily CSV share once testing is complete.
+
+---
+
+## CSV Fields (customizable)
+
+The default exported fields include:
+- `Date`, `Username`, `ComputerName`, `Site`
+- `OneDriveSizeGB`, `ODFC_SizeGB`
+- `SystemModel`, `OSName`, `OSVersion`, `OSBuild`, `BuildLab`
+- `SessionType` (VDI vs Thick Client)
+
+You can reorder or comment out fields directly in the `$userSummary` object block.
+
+---
+
+## Prerequisites
+
+- PowerShell 5.1 or later
+- AD module (for `Get-ADUser`)
+- Permissions to read registry, environment vars, FSLogix keys
+- Network access to ODFC profile shares (if applicable)
+
+---
+
+## Example Use
+
+Run manually or via a scheduled task on login:
+
+```powershell
+.\Enterprise-UserReport.ps1
 ```
 
 ---
 
-## 📎 License
+## Cleanup Logic
 
-This script is provided as-is with no warranty. Use at your own discretion in production environments.
+Old report directories (older than 7 days) are automatically deleted from the report root for each user.
 
 ---
 
+## Security Notes
 
+- Does **not require elevated permissions**
+- Only gathers session-local data
+- CSV/HTML are saved in user-writable paths unless otherwise configured
+
+---
+
+## To-Do / Future Enhancements
+
+- Export to central syslog or database
+- Email report via SMTP
+- Add CPU/RAM diagnostics
+- Track failed logins or lockouts
+
+---
+
+##Contact
+
+Maintained by: **Richard Edwards**  
+For use within Windows Enterprise environments
 
