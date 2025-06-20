@@ -1,42 +1,43 @@
 #==================================================================================
-# Author: Richard Edwards for CompanyName
-# Reviewer: 
-# Last Updated: 2025-06-18
-# Self-contained logon script for VDI/Thick Client/Trusted Thin Client environments
+# Author: Your Name for Company Name
+# Script: Enterprise-UserReport.ps1
+# Purpose: Daily user diagnostic report for VDI and Thick clients
+# Permissions: Non-privileged (Standard User)
 #==================================================================================
 
-$DaysToKeep = 7
-$Username   = $env:USERNAME
-$Today      = Get-Date -Format "yyyy-MM-dd"
-# Where to save the report
-$Username = $env:USERNAME
-#change this to the actual share name
-$BasePath = "\\Domain\Path_to_share\$Username"
-# Ensure the directory exists
-if (-not (Test-Path $BasePath)) {
-    Write-Host "[+] Creating network folder: $BasePath"
-    New-Item -Path $BasePath -ItemType Directory -Force | Out-Null
-}
-# Timestamped report name
-$TimeStamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
-$ReportPath = Join-Path -Path $BasePath -ChildPath "UserReport_$TimeStamp.html"
+# -------------------
+# Configuration
+# -------------------
+$Username      = $env:USERNAME
+$Today         = Get-Date -Format "yyyy-MM-dd"
+$ReportRoot    = "C:\Users\$Username\Downloads"  # <-- For testing; change to: "\\Domain\dfs\EnterpriseReports"
+$CsvShareRoot  = "C:\Users\$Username\Downloads"  # <-- Future: "\\Domain\dfs\EnterpriseReports\DailyCSVs"
 
-Write-Host "[+] Starting Enterprise Daily User Report for $Username"
+$UserFolder    = Join-Path $ReportRoot $Username
+$OutDir        = Join-Path $UserFolder $Today
+$ReportPath    = Join-Path $OutDir "Enterprise-UserReport-$Username-$Today.html"
+$CsvPath       = Join-Path $CsvShareRoot "Enterprise-UserReport-Aggregated-$Today.csv"
 
+# -------------------
+# Create Output Directory
+# -------------------
 if (!(Test-Path $OutDir)) {
-    New-Item -Path $OutDir -ItemType Directory -Force | Out-Null
-    Write-Host "[+] Created report directory: $OutDir"
+    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+    Write-Host "[+] Created report path: $OutDir"
 }
 
-# Cleanup old reports
-Write-Host "[+] Cleaning up old reports (>$DaysToKeep days)"
-$parentDir = Split-Path $OutDir -Parent
-Get-ChildItem -Path $parentDir -Directory | Where-Object {
+# -------------------
+# Clean Old Reports (7 days back)
+# -------------------
+$DaysToKeep = 7
+Get-ChildItem -Path (Split-Path $UserFolder) -Directory | Where-Object {
     $_.Name -match '^\d{4}-\d{2}-\d{2}$' -and
-    ((Get-Date) - [datetime]($_.Name)) -gt (New-TimeSpan -Days $DaysToKeep)
+    ((Get-Date) - [datetime]$_.Name) -gt (New-TimeSpan -Days $DaysToKeep)
 } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
-# HTML Start
+# -------------------
+# Start HTML Report
+# -------------------
 $reportHtml = @"
 <!DOCTYPE html>
 <html><head><title>User Report</title>
@@ -50,16 +51,35 @@ ul { margin: 0; padding-left: 20px }
 <h1>Enterprise Daily User Report for $Username</h1>
 "@
 
+# -------------------
+# Basic Info
+# -------------------
 $reportHtml += "<div><b>Username:</b> $Username</div>"
 $reportHtml += "<div><b>Computer Name:</b> $env:COMPUTERNAME</div>"
 $reportHtml += "<div><b>Date:</b> $(Get-Date)</div>"
 
-# Accurate Logon Time
-Write-Host "[+] Getting logon time..."
+# -------------------
+# Site Location
+# -------------------
 try {
+    $logonServer = $env:LOGONSERVER -replace "\\", ""
+    switch -Wildcard ($logonServer) {
+        "*Site 1*" { $site = "Main office" }
+        "*Site 2*" { $site = "Annex" }
+        default { $site = "UNKNOWN" }
+    }
+    $reportHtml += "<div><b>Site Location:</b> $site (via $logonServer)</div>"
+} catch {
+    $reportHtml += "<div><b>Site Location:</b> Unknown</div>"
+}
+
+# -------------------
+# Logon Time
+# -------------------
+try {
+    Write-Host "[+] Getting logon time..."
     $userSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
-    $logon = Get-CimInstance -ClassName Win32_LogonSession |
-        Where-Object { $_.LogonType -in 2,10 } |
+    $logon = Get-CimInstance -Class Win32_LogonSession | Where-Object { $_.LogonType -in 2,10 } |
         ForEach-Object {
             $assoc = Get-CimAssociatedInstance -InputObject $_ -ResultClassName Win32_Account |
                 Where-Object { $_.SID -eq $userSID }
@@ -70,65 +90,49 @@ try {
 
     if ($logon -and $logon.StartTime) {
         $start = [datetime]::Parse($logon.StartTime)
-        $reportHtml += "<div><b>User Logon Time:</b> $start</div>"
         $uptime = New-TimeSpan -Start $start -End (Get-Date)
+        $reportHtml += "<div><b>User Logon Time:</b> $start</div>"
         $reportHtml += "<div><b>Time Since Logon:</b> $($uptime.Hours) hrs $($uptime.Minutes) min</div>"
-    } else {
-        $reportHtml += "<div><b>User Logon Time:</b> Not Found</div>"
     }
 } catch {
-    $reportHtml += "<div><b>User Logon Time:</b> Error</div>"
+    $reportHtml += "<div><b>Logon Time:</b> Error</div>"
 }
-# FSLogix Profile
-Write-Host "[+] Checking FSLogix Profile..."
+
+# -------------------
+# FSLogix
+# -------------------
 try {
+    Write-Host "[+] Checking FSLogix..."
     $fsKey = "HKCU:\SOFTWARE\FSLogix\Profiles\Session"
     if (Test-Path $fsKey) {
         $fs = Get-ItemProperty $fsKey
-        if ($fs.VHDOpenedFilePath) {
-            $fsSize = (Get-Item $fs.VHDOpenedFilePath).Length
-            $reportHtml += "<div><b>FSLogix Profile:</b> $($fs.VHDOpenedFilePath) ($([math]::Round($fsSize / 1GB, 2)) GB)</div>"
-        } else {
-            $reportHtml += "<div><b>FSLogix Profile:</b> Key found but no VHD attached</div>"
-        }
+        $fsSize = (Get-Item $fs.VHDOpenedFilePath).Length
+        $reportHtml += "<div><b>FSLogix Profile:</b> $($fs.VHDOpenedFilePath) ($([math]::Round($fsSize / 1GB, 2)) GB)</div>"
     } else {
-        $reportHtml += "<div><b>FSLogix Profile:</b> Not detected</div>"
+        $reportHtml += "<div><b>FSLogix Profile:</b> Not found</div>"
     }
 } catch {
-    $reportHtml += "<div><b>FSLogix Profile:</b> Error</div>"
+    $reportHtml += "<div><b>FSLogix:</b> Error</div>"
 }
 
-# ODFC Detection (Hybrid)
-Write-Host "[+] Scanning for ODFC container (both VHDX and metadata)..."
+# -------------------
+# ODFC Container Check
+# -------------------
 try {
     $odfcFound = $false
-    $odfcServers = @("NAS1", "NAS2")
+    $odfcServers = @("odfcServer01", "odfcServer02")
     $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 
     foreach ($server in $odfcServers) {
         $basePath = "\\$server.domain\FSLProfileDisk\$Username"
-
-        # Check O365_Diff metadata
-        $odfcMetaPath = Join-Path $basePath "O365_Diff"
-        if (Test-Path $odfcMetaPath) {
-            $auth = Get-ChildItem $odfcMetaPath -Filter *.authString -ErrorAction SilentlyContinue
-            $cert = Get-ChildItem $odfcMetaPath -Filter *.signingCert -ErrorAction SilentlyContinue
-            if ($auth -or $cert) {
-                $files = ($auth + $cert | ForEach-Object { $_.Name }) -join ", "
-                $reportHtml += "<div><b>ODFC Metadata:</b> $files</div>"
-                $odfcFound = $true
-            }
-        }
-
-        # Check SID-based folder for ODFC VHDX
         $subFolders = Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -like "*$Username" -and $_.Name -like "*$sid*" }
+                      Where-Object { $_.Name -like "*$Username*" -and $_.Name -like "*$sid*" }
+
         foreach ($folder in $subFolders) {
-            $vhd = Get-ChildItem -Path $folder.FullName -Filter "ODFC_*.vhdx" -ErrorAction SilentlyContinue |
-                   Select-Object -First 1
+            $vhd = Get-ChildItem $folder.FullName -Filter "ODFC_*.vhdx" -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($vhd) {
                 $size = [math]::Round($vhd.Length / 1GB, 2)
-                $reportHtml += "<div><b>ODFC Container VHDX:</b> $($vhd.FullName) ($size GB)</div>"
+                $reportHtml += "<div><b>ODFC VHDX:</b> $($vhd.FullName) ($size GB)</div>"
                 $odfcFound = $true
                 break
             }
@@ -138,14 +142,15 @@ try {
     }
 
     if (-not $odfcFound) {
-        $reportHtml += "<div><b>ODFC Container:</b> Not found in known locations</div>"
+        $reportHtml += "<div><b>ODFC Container:</b> Not found</div>"
     }
 } catch {
-    $reportHtml += "<div><b>ODFC Container:</b> Error during lookup</div>"
+    $reportHtml += "<div><b>ODFC Container:</b> Error</div>"
 }
 
-# OneDrive
-Write-Host "[+] Checking OneDrive..."
+# -------------------
+# OneDrive Info
+# -------------------
 try {
     $oneDrivePath = $env:OneDrive
     if ($oneDrivePath -and (Test-Path $oneDrivePath)) {
@@ -153,161 +158,173 @@ try {
         $oneDriveSize = [math]::Round($size / 1GB, 2)
         $reportHtml += "<div><b>OneDrive:</b> $oneDrivePath ($oneDriveSize GB)</div>"
     } else {
-        $reportHtml += "<div><b>OneDrive:</b> Not detected</div>"
+        $reportHtml += "<div><b>OneDrive:</b> Not Detected</div>"
     }
 } catch {
     $reportHtml += "<div><b>OneDrive:</b> Error</div>"
 }
+
+# -------------------
 # Mapped Drives
-Write-Host "[+] Gathering mapped network drives (via WMI)..."
+# -------------------
 try {
     $netDrives = Get-WmiObject -Class Win32_LogicalDisk -Filter "DriveType = 4"
     if ($netDrives) {
         $reportHtml += "<div><b>Mapped Drives:</b><ul>"
         foreach ($d in $netDrives) {
-            $reportHtml += "<li>Drive $($d.DeviceID): ➜ $($d.ProviderName)</li>"
+            $reportHtml += "<li>$($d.DeviceID): ➜ $($d.ProviderName)</li>"
         }
         $reportHtml += "</ul></div>"
-    } else {
-        $reportHtml += "<div><b>Mapped Drives:</b> None found</div>"
     }
 } catch {
     $reportHtml += "<div><b>Mapped Drives:</b> Error</div>"
 }
 
-
-# Mapped Printers
-Write-Host "[+] Gathering mapped printers (network only)..."
+# -------------------
+# System Info
+# -------------------
 try {
-    $printers = Get-CimInstance Win32_Printer | Where-Object {
-        $_.Network -eq $true
-    }
+    $model     = (Get-CimInstance Win32_ComputerSystem).Model
+    $os        = Get-CimInstance Win32_OperatingSystem
+    $winReg    = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $releaseId = $winReg.DisplayVersion
+    $buildLab  = $winReg.BuildLabEx
 
-    if ($printers) {
-        $reportHtml += "<div><b>Mapped Printers:</b><ul>"
-        foreach ($p in $printers) {
-            $reportHtml += "<li>$($p.Name)</li>"
-        }
-        $reportHtml += "</ul></div>"
-    } else {
-        $reportHtml += "<div><b>Mapped Printers:</b> No user-mapped printers found</div>"
-    }
+    $extendedOsName = "$($os.Caption) $releaseId"
+
+    $reportHtml += "<div><b>System Model:</b> $model</div>"
+    $reportHtml += "<div><b>Operating System:</b> $extendedOsName (Version: $($os.Version), Build: $($os.BuildNumber))</div>"
+    $reportHtml += "<div><b>Build Lab:</b> $buildLab</div>"
 } catch {
-    $reportHtml += "<div><b>Mapped Printers:</b> Error</div>"
+    $reportHtml += "<div><b>System Info:</b> Error</div>"
 }
 
-
-
-# Network Info
-Write-Host "[+] Collecting network information..."
-try {
-    $ipConfig = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq "Up" } | Select-Object -First 1
-    if ($ipConfig) {
-        $reportHtml += "<div><b>Default Gateway:</b> $($ipConfig.IPv4DefaultGateway.NextHop)</div>"
-        $reportHtml += "<div><b>Interface:</b> $($ipConfig.InterfaceAlias) ($($ipConfig.IPv4Address.IPAddress))</div>"
-        $dnsList = $ipConfig.DnsServer.ServerAddresses -join ", "
-        $reportHtml += "<div><b>DNS:</b> $dnsList</div>"
-    } else {
-        $reportHtml += "<div><b>Network:</b> Unable to determine active adapter</div>"
-    }
-} catch {
-    $reportHtml += "<div><b>Network:</b> Error</div>"
-}
-
-# VDI vs Thick Client Check
-Write-Host "[+] Detecting session type..."
-try {
-    $vmServices = Get-Service | Where-Object { $_.DisplayName -like "*VMware*" -and $_.Status -eq "Running" }
-    if ($vmServices -match "VMTools") {
-        $reportHtml += "<div><b>Session Type:</b> VDI (VMware Tools Detected)</div>"
-    } else {
-        $reportHtml += "<div><b>Session Type:</b> Thick Client / Console</div>"
-    }
-} catch {
-    $reportHtml += "<div><b>Session Type:</b> Unknown</div>"
-}
-# System Uptime
-Write-Host "[+] Calculating system uptime..."
-try {
-    $os = Get-CimInstance Win32_OperatingSystem
-    $uptime = (Get-Date) - $os.LastBootUpTime
-    $reportHtml += "<div><b>System Uptime:</b> $($uptime.Days) days $($uptime.Hours) hrs $($uptime.Minutes) min</div>"
-} catch {
-    $reportHtml += "<div><b>System Uptime:</b> Error</div>"
-}
-
+# -------------------
 # Environment Variables
-Write-Host "[+] Collecting key environment variables..."
-$envVars = @("USERDNSDOMAIN", "LOGONSERVER", "SESSIONNAME")
+# -------------------
+Write-Host "[+] Capturing environment variables..."
+$envVars = @(
+    "USERDNSDOMAIN"
+    "USERDOMAIN"
+    "LOGONSERVER"
+    # "COMPUTERNAME"
+    # "SESSIONNAME"
+)
+
 $reportHtml += "<div><b>Environment Variables:</b><ul>"
 foreach ($var in $envVars) {
     try {
         $val = (Get-Item "Env:$var").Value
-        $reportHtml += "<li>$($var): $val</li>"
+        $reportHtml += "<li>${var}: $val</li>"
     } catch {
-        $reportHtml += "<li>$($var): Not Set</li>"
+        $reportHtml += "<li>${var}: Not Set</li>"
     }
 }
 $reportHtml += "</ul></div>"
 
-# Logon Metrics (Event Logs - Optional, best effort)
-Write-Host "[+] Parsing event log for slow logon indicators..."
+# -------------------
+# Group Memberships
+# -------------------
 try {
-    $events = Get-WinEvent -LogName "Microsoft-Windows-GroupPolicy/Operational" -MaxEvents 20 -ErrorAction SilentlyContinue
-    $recentLogon = $events | Where-Object { $_.Id -in 5310, 5312, 8000 } | Select-Object -First 1
-    if ($recentLogon) {
-        $reportHtml += "<div><b>Logon Time Metrics:</b> $($recentLogon.TimeCreated): $($recentLogon.Message)</div>"
+    $groups = Get-ADUser $Username -Properties MemberOf | Select-Object -ExpandProperty MemberOf |
+        ForEach-Object { ($_ -split ',')[0] -replace '^CN=' }
+
+    if ($groups) {
+        $reportHtml += "<div><b>Group Memberships:</b><ul>"
+        foreach ($g in $groups) {
+            $reportHtml += "<li>$g</li>"
+        }
+        $reportHtml += "</ul></div>"
     } else {
-        $reportHtml += "<div><b>Logon Time Metrics:</b> No recent events</div>"
+        $reportHtml += "<div><b>Group Memberships:</b> None found</div>"
     }
 } catch {
-    $reportHtml += "<div><b>Logon Time Metrics:</b> Error reading logs</div>"
+    $reportHtml += "<div><b>Group Memberships:</b> Error retrieving</div>"
 }
 
-# Close HTML and Save
-$reportHtml += "</body></html>"
+# -------------------
+# Group Policies
+# -------------------
+Write-Host "[+] Gathering applied Group Policies via gpresult /R..."
+$gpoOutput = ""
+$tries = 0
+do {
+    $gpoOutput = gpresult /R /scope:user 2>&1
+    if ($gpoOutput -match "Applied Group Policy Objects") { break }
+    Start-Sleep -Seconds 5
+    $tries++
+} while ($tries -lt 3)
 
+if ($gpoOutput -match "Applied Group Policy Objects") {
+    $lines = $gpoOutput -split "`r?`n"
+    $startIndex = ($lines | Select-String "Applied Group Policy Objects").LineNumber
+    $appliedGPOs = @()
+    for ($i = $startIndex; $i -lt $lines.Length; $i++) {
+        $line = $lines[$i].Trim()
+        if ($line -eq "") { break }
+        if ($line -notmatch "Applied Group Policy Objects") {
+            $appliedGPOs += $line
+        }
+    }
+
+    if ($appliedGPOs.Count -gt 0) {
+        $reportHtml += "<div><b>Applied Group Policies:</b><ul>"
+        $appliedGPOs | ForEach-Object { $reportHtml += "<li>$_</li>" }
+        $reportHtml += "</ul></div>"
+    } else {
+        $reportHtml += "<div><b>Applied Group Policies:</b> None found</div>"
+    }
+} else {
+    $reportHtml += "<div><b>Applied Group Policies:</b> Failed to parse gpresult output</div>"
+}
+
+# -------------------
+# Save to CSV, for data aggregation
+# -------------------
+Write-Host "[+] Exporting flat data to daily CSV for metrics aggregation..."
+
+$userSummary = [PSCustomObject]@{
+    Date                  = $Today
+    Username              = $Username
+    ComputerName          = $env:COMPUTERNAME
+    Site                  = $site
+    #LogonTime             = $start
+    #LogonDuration         = "$($uptime.Hours)h $($uptime.Minutes)m"
+    #FSLogixProfilePath    = if ($fs -and $fs.VHDOpenedFilePath) { $fs.VHDOpenedFilePath } else { "N/A" }
+    #FSLogixSizeGB         = if ($fs -and $fs.VHDOpenedFilePath) { [math]::Round((Get-Item $fs.VHDOpenedFilePath).Length / 1GB, 2) } else { 0 }
+    #ODFC_VHDX             = if ($vhd) { $vhd.FullName } else { "N/A" }
+    ODFC_SizeGB           = if ($vhd) { [math]::Round($vhd.Length / 1GB, 2) } else { 0 }
+    #OneDrivePath          = $oneDrivePath
+    OneDriveSizeGB        = $oneDriveSize
+    #MappedDrives          = if ($netDrives) { ($netDrives | ForEach-Object { "$($_.DeviceID):$($_.ProviderName)" }) -join "; " } else { "None" }
+    #PrinterCount          = if ($printers) { $printers.Count } else { 0 }
+    #DefaultGateway        = if ($ipConfig -and $ipConfig.IPv4DefaultGateway) { $ipConfig.IPv4DefaultGateway.NextHop } else { "N/A" }
+    #Interface             = if ($ipConfig) { $ipConfig.InterfaceAlias } else { "N/A" }
+    #IPAddress             = if ($ipConfig -and $ipConfig.IPv4Address) { $ipConfig.IPv4Address.IPAddress } else { "N/A" }
+    #DNS                   = if ($ipConfig -and $ipConfig.DNSServer -and $ipConfig.DNSServer.ServerAddresses) { $ipConfig.DNSServer.ServerAddresses -join ", " } else { "N/A" }
+    SystemModel           = $model
+    OSName                = $extendedOsName
+    #OSVersion             = $os.Version
+    OSBuild               = $os.BuildNumber
+    #WindowsVersion        = if ($os.Caption -like "*Windows 11*") { "Windows 11" } elseif ($os.Caption -like "*Windows 10*") { "Windows 10" } else { "Other" }
+    SessionType           = if ($vmServices) { "VDI" } else { "Thick Client" }
+    #SystemUptime          = "$($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"
+    #GroupCount            = if ($groups) { $groups.Count } else { 0 }
+    #AppliedGPOs           = if ($appliedGPOs) { $appliedGPOs -join "; " } else { "None" }
+}
+
+
+$userSummary | Export-Csv -Path $CsvPath -Append -NoTypeInformation -Encoding UTF8 -Force
+Write-Host "[✓] CSV data written to $CsvPath"
+
+# -------------------
+# Save HTML Report
+# -------------------
 Write-Host "[+] Saving HTML report to: $ReportPath"
 try {
+    $reportHtml += "</body></html>"
     $reportHtml | Out-File -FilePath $ReportPath -Encoding UTF8 -Force
-    Write-Host "[✔] Report saved successfully."
+    Write-Host "[✓] HTML report saved successfully."
 } catch {
-    Write-Host "[!] Failed to save report."
-}
-
-
-# CSV Summary Row (Central Log)
-$CsvBase = "\\domain\Path_to_share\EnterpriseSummary"
-if (-not (Test-Path $CsvBase)) {
-    New-Item -Path $CsvBase -ItemType Directory -Force | Out-Null
-}
-$CsvFile = Join-Path $CsvBase "DailyUserSummary.csv"
-
-# Construct summary object
-$summary = [PSCustomObject]@{
-    Date             = (Get-Date -Format "yyyy-MM-dd HH:mm")
-    Username         = $Username
-    ComputerName     = $env:COMPUTERNAME
-    SessionType      = $SessionType
-    FSLogixProfile   = $FSLogixProfileDisplay
-    ODFC_Container   = $OdfcContainerDisplay
-    OneDrivePath     = $OneDrivePath
-    OneDriveSize     = $OneDriveSize
-    ProfileSizeGB    = $ProfileSize
-    LogonTime        = $LogonTime
-    TimeSinceLogon   = $LogonDurationDisplay
-    Uptime           = "$($uptime.Days)d $($uptime.Hours)h $($uptime.Minutes)m"
-    DefaultGateway   = $DefaultGateway
-    IPAddress        = $ipAddress
-    MappedDrives     = ($netDrives | ForEach-Object { $_.ProviderName }) -join "; "
-    MappedPrinters   = ($printers | ForEach-Object { $_.Name }) -join "; "
-}
-
-# Append to CSV
-try {
-    $append = -not (Test-Path $CsvFile)
-    $summary | Export-Csv -Path $CsvFile -NoTypeInformation -Append:$append
-    Write-Host "[✔] Summary CSV updated: $CsvFile"
-} catch {
-    Write-Host "[!] Failed to update CSV: $_"
+    Write-Host "[!] Failed to write HTML report"
 }
