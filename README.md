@@ -3,7 +3,7 @@
 ## Overview
 This PowerShell script is designed for **daily diagnostics and reporting** on enterprise Windows environments, supporting both **VDI** and **thick clients**. It collects key system and user session data, builds a visually formatted **HTML report**, and outputs **CSV summaries** for aggregation and monitoring.
 
-> Authored by: Richard Edwards for Company Name  
+> Authored by: Richard Edwards  
 > Permission Level: Standard user (non-privileged)
 
 ---
